@@ -53,3 +53,15 @@ async def accept_task(req: TaskRequest):
     }
     ok, msg = await post_with_backoff(req.evaluation_url, payload)
     return {"status": "ok" if ok else "accepted", **payload, **({"note": msg} if not ok else {})}
+@APP.get("/")
+def root():
+    return {"status": "ok", "hint": "POST /task with JSON to build & deploy"}
+
+@APP.get("/healthz")
+def health():
+    return {"ok": True}
+
+@APP.get("/favicon.ico")
+def favicon():
+    from fastapi.responses import Response
+    return Response(content=b"", media_type="image/x-icon")
