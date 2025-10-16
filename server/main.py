@@ -66,22 +66,25 @@ def root():
 # ---------------------------------------------------------------------
 @APP.post("/task")
 async def accept_task(req: TaskRequest):
-    # 1) Secret check
+    # 1️⃣ Secret check
     if not verify_secret(req.secret):
         raise HTTPException(status_code=401, detail="Invalid secret")
 
-    # 2) Derive repo/work directory
+    # 2️⃣ Derive repo/work directory
     repo_name = req.task.replace("/", "-")
     work_dir = str(Path(__file__).resolve().parents[1] / "app" / repo_name)
 
-    # 3) Generate the app contents
+    # 3️⃣ Ensure repo exists and is synced before writing files
+    ensure_repo(repo_name, work_dir)
+
+    # 4️⃣ Generate the app contents
     await materialize_app(
         work_dir,
         req.brief,
         [a.model_dump() for a in req.attachments],
     )
 
-    # 4) README + LICENSE content (title + summary)
+    # 5️⃣ README + LICENSE
     title = (repo_name or req.task).replace("-", " ").replace("_", " ").title()
     summary = (
         f"{req.brief}\n\n"
@@ -89,16 +92,15 @@ async def accept_task(req: TaskRequest):
     )
     write_license_and_readme(work_dir, title, summary)
 
-    # 5) GitHub Pages workflow
+    # 6️⃣ GitHub Pages workflow
     add_pages_workflow(work_dir)
 
-    # 6) Create repo (via gh CLI or API) and push
-    ensure_repo(repo_name, work_dir)
-    # NOTE: ensure your github_ops.git_push_and_get_commit signature matches this call.
+    # 7️⃣ Commit and push
     commit_sha = git_push_and_get_commit(work_dir)
 
-    # 7) Notify evaluation endpoint
-    payload = {
+    # ✅ Return JSON
+    return {
+        "status": "ok",
         "email": req.email,
         "task": req.task,
         "round": req.round,

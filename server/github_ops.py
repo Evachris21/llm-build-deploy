@@ -31,19 +31,46 @@ def _create_repo_via_api(repo_name: str) -> None:
         raise RuntimeError(f"GitHub repo create failed ({r.status_code}): {r.text}")
 
 def ensure_repo(repo_name: str, work_dir: str) -> None:
-    """Create repo via API and push initial commit."""
+    """
+    Make sure a remote repo exists, init a local git repo if needed,
+    set the tokened remote, fetch remote main (if it exists),
+    and check out local main in sync with origin/main.
+    """
+    from pathlib import Path
+    import os
+
+    os.makedirs(work_dir, exist_ok=True)
+
+    # 1) Create remote repo via API if needed (your existing helper)
     _create_repo_via_api(repo_name)
 
-    sh("git init -b main", cwd=work_dir)
-    sh(f'git config user.name "{GITHUB_USER}"', cwd=work_dir)
-    sh(f'git config user.email "{GITHUB_USER}@users.noreply.github.com"', cwd=work_dir)
+    # 2) Init local repo if needed & set identity
+    if not Path(work_dir, ".git").exists():
+        sh("git init -b main", cwd=work_dir)
+        sh(f'git config user.name "{GITHUB_USER}"', cwd=work_dir)
+        sh(f'git config user.email "{GITHUB_USER}@users.noreply.github.com"', cwd=work_dir)
 
+    # 3) Ensure remote "origin" points to the tokened URL
     remote_url = f"https://{GITHUB_USER}:{GITHUB_TOKEN}@github.com/{GITHUB_USER}/{repo_name}.git"
     try:
+        current = sh("git remote get-url origin", cwd=work_dir)
+    except RuntimeError:
+        current = ""
+    if "origin" not in (sh("git remote", cwd=work_dir) or ""):
+        sh(f'git remote add origin "{remote_url}"', cwd=work_dir)
+    elif remote_url not in current:
+        # Replace origin if it points somewhere else
         sh("git remote remove origin", cwd=work_dir)
-    except Exception:
-        pass
-    sh(f'git remote add origin "{remote_url}"', cwd=work_dir)
+        sh(f'git remote add origin "{remote_url}"', cwd=work_dir)
+
+    # 4) Sync local with remote main if it exists
+    sh("git fetch origin main || true", cwd=work_dir)
+    # If origin/main exists, start from it (so push can fast-forward)
+    rc = subprocess.run("git rev-parse --verify origin/main", shell=True, cwd=work_dir).returncode
+    if rc == 0:
+        sh("git checkout -B main origin/main", cwd=work_dir)
+    else:
+        sh("git checkout -B main", cwd=work_dir)
 
 def write_license_and_readme(work_dir: str, title: str, summary: str) -> None:
     Path(work_dir, "LICENSE").write_text(
@@ -90,10 +117,18 @@ jobs:
     )
 
 def git_push_and_get_commit(work_dir: str) -> str:
-    sh("git add .", cwd=work_dir)
-    sh('git commit -m "auto: build" --allow-empty', cwd=work_dir)
-    sh("git branch -M main", cwd=work_dir)
-    sh("git push -u origin main", cwd=work_dir)
+    """
+    Commit changes and push. If rejected due to remote updates,
+    rebase onto origin/main and push again.
+    """
+    sh("git add -A", cwd=work_dir)
+    sh('git commit -m "auto: update" --allow-empty', cwd=work_dir)
+    try:
+        sh("git push -u origin main", cwd=work_dir)
+    except RuntimeError:
+        # Remote has new commits (e.g., from round 1). Rebase and push again.
+        sh("git pull --rebase origin main || true", cwd=work_dir)
+        sh("git push -u origin main", cwd=work_dir)
     return sh("git rev-parse HEAD", cwd=work_dir)
 
 def repo_url(repo_name: str) -> str:
