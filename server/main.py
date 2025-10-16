@@ -41,7 +41,14 @@ async def accept_task(req: TaskRequest):
     work_dir = str(pathlib.Path(__file__).resolve().parents[1] / "app" / repo_name)
 
     await materialize_app(work_dir, req.brief, [a.model_dump() for a in req.attachments])
-    write_license_and_readme(work_dir, req.brief)
+    # Build a title and summary for README/license
+title = (repo_name or req.task).replace("-", " ").replace("_", " ").title() # type: ignore
+summary = (
+    f"{req.brief}\n\n"
+    f"This app was generated automatically for task '{req.task}' (round {req.round})."
+)
+
+write_license_and_readme(work_dir, title, summary)
     add_pages_workflow(work_dir)
 
     ensure_repo(repo_name, work_dir)
