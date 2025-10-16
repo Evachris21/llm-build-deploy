@@ -1,6 +1,69 @@
-from fastapi import HTTPException
-import pathlib
+# server/main.py
 
+from __future__ import annotations
+
+from pathlib import Path
+from typing import List
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+
+from security import verify_secret
+from generator import materialize_app
+from github_ops import (
+    ensure_repo,
+    write_license_and_readme,
+    add_pages_workflow,
+    git_push_and_get_commit,
+    pages_url,
+    repo_url,
+)
+from notifier import post_with_backoff
+
+
+# ---------------------------------------------------------------------
+# Load .env and create FastAPI app BEFORE any route decorators
+# ---------------------------------------------------------------------
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+APP = FastAPI(title="LLM Build & Deploy")
+
+
+# ---------------------------------------------------------------------
+# Request models
+# ---------------------------------------------------------------------
+class Attachment(BaseModel):
+    name: str
+    url: str
+
+
+class TaskRequest(BaseModel):
+    email: str
+    secret: str
+    task: str
+    round: int = Field(ge=1)
+    nonce: str
+    brief: str
+    checks: List[str] = []
+    evaluation_url: str
+    attachments: List[Attachment] = []
+
+
+# ---------------------------------------------------------------------
+# Health & info
+# ---------------------------------------------------------------------
+@APP.get("/")
+def root():
+    return {
+        "status": "ok",
+        "message": "LLM Build & Deploy API. POST /task with the JSON request to trigger a build.",
+        "docs": "/docs",
+    }
+
+
+# ---------------------------------------------------------------------
+# Main task endpoint
+# ---------------------------------------------------------------------
 @APP.post("/task")
 async def accept_task(req: TaskRequest):
     # 1) Secret check
@@ -9,7 +72,7 @@ async def accept_task(req: TaskRequest):
 
     # 2) Derive repo/work directory
     repo_name = req.task.replace("/", "-")
-    work_dir = str(pathlib.Path(__file__).resolve().parents[1] / "app" / repo_name)
+    work_dir = str(Path(__file__).resolve().parents[1] / "app" / repo_name)
 
     # 3) Generate the app contents
     await materialize_app(
@@ -29,8 +92,9 @@ async def accept_task(req: TaskRequest):
     # 5) GitHub Pages workflow
     add_pages_workflow(work_dir)
 
-    # 6) Create repo (via API) and push
+    # 6) Create repo (via gh CLI or API) and push
     ensure_repo(repo_name, work_dir)
+    # NOTE: ensure your github_ops.git_push_and_get_commit signature matches this call.
     commit_sha = git_push_and_get_commit(work_dir)
 
     # 7) Notify evaluation endpoint
