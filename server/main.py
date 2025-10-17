@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import List
 
@@ -9,18 +10,19 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-from security import verify_secret
-from generator import materialize_app
-from github_ops import (
+
+from .security import verify_secret
+from .generator import materialize_app
+from .github_ops import (
     ensure_repo,
     write_license_and_readme,
-    add_pages_workflow,
     git_push_and_get_commit,
     pages_url,
     repo_url,
+    enable_pages_workflow,
 )
-from notifier import post_with_backoff
-
+# If you plan to notify, keep this; otherwise you can remove it
+from .notifier import post_with_backoff  # optional, currently unused
 
 # ---------------------------------------------------------------------
 # Load .env and create FastAPI app BEFORE any route decorators
@@ -28,14 +30,12 @@ from notifier import post_with_backoff
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
 APP = FastAPI(title="LLM Build & Deploy")
 
-
 # ---------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------
 class Attachment(BaseModel):
     name: str
     url: str
-
 
 class TaskRequest(BaseModel):
     email: str
@@ -48,7 +48,6 @@ class TaskRequest(BaseModel):
     evaluation_url: str
     attachments: List[Attachment] = []
 
-
 # ---------------------------------------------------------------------
 # Health & info
 # ---------------------------------------------------------------------
@@ -60,60 +59,70 @@ def root():
         "docs": "/docs",
     }
 
-
 # ---------------------------------------------------------------------
 # Main task endpoint
 # ---------------------------------------------------------------------
 @APP.post("/task")
 async def accept_task(req: TaskRequest):
-    # 1️⃣ Secret check
+    # 1) Verify secret
     if not verify_secret(req.secret):
         raise HTTPException(status_code=401, detail="Invalid secret")
 
-    # 2️⃣ Derive repo/work directory
-    repo_name = req.task.replace("/", "-")
-    work_dir = str(Path(__file__).resolve().parents[1] / "app" / repo_name)
+    # 2) Prepare working dir/repo name
+    repo_name = req.task.strip()
+    if not repo_name:
+        raise HTTPException(status_code=400, detail="Empty task/repo name")
 
-    # 3️⃣ Ensure repo exists and is synced before writing files
+    work_dir = f"/tmp/{repo_name}"
+
+    # 3) Ensure repo exists locally & remote origin is set
     ensure_repo(repo_name, work_dir)
 
-    # 4️⃣ Generate the app contents
-    await materialize_app(
-        work_dir,
-        req.brief,
-        [a.model_dump() for a in req.attachments],
-    )
+    # 4) Generate files with LLM (no fallback)
+    await materialize_app(work_dir, req.brief, [a.model_dump() for a in req.attachments])
 
-    # 5️⃣ README + LICENSE
-    title = (repo_name or req.task).replace("-", " ").replace("_", " ").title()
-    summary = (
-        f"{req.brief}\n\n"
-        f"This app was generated automatically for task '{req.task}' (round {req.round})."
-    )
-    write_license_and_readme(work_dir, title, summary)
+    # 5) Optional: LICENSE + README
+    try:
+        write_license_and_readme(
+            work_dir,
+            title=repo_name,
+            summary=f"Auto-generated for task '{repo_name}' (round {req.round})."
+        )
+    except Exception:
+        pass
 
-    # 6️⃣ GitHub Pages workflow
-    add_pages_workflow(work_dir)
+    # 6) ✅ Enable Pages (workflow) BEFORE first push
+    await enable_pages_workflow(os.getenv("GITHUB_USER"), repo_name)
 
-    # 7️⃣ Commit and push
+    # 7) First push -> triggers Pages workflow
     commit_sha = git_push_and_get_commit(work_dir)
 
-    # ✅ Return JSON
+    # 8) Build URLs to return
+    user = os.getenv("GITHUB_USER")
+    repo = repo_url(user, repo_name)
+    pages = pages_url(user, repo_name)
+
+    # 9) (Optional) notify evaluation_url
+    # try:
+    #     await post_with_backoff(req.evaluation_url, {
+    #         "email": req.email,
+    #         "task": req.task,
+    #         "round": req.round,
+    #         "nonce": req.nonce,
+    #         "repo_url": repo,
+    #         "commit_sha": commit_sha,
+    #         "pages_url": pages,
+    #     })
+    # except Exception:
+    #     pass
+
     return {
         "status": "ok",
         "email": req.email,
         "task": req.task,
         "round": req.round,
         "nonce": req.nonce,
-        "repo_url": repo_url(repo_name),
+        "repo_url": repo,
         "commit_sha": commit_sha,
-        "pages_url": pages_url(repo_name),
-    }
-    ok, msg = await post_with_backoff(req.evaluation_url, payload)
-
-    # 8) Response back to caller
-    return {
-        "status": "ok" if ok else "accepted",
-        **payload,
-        **({"note": msg} if not ok else {}),
+        "pages_url": pages,
     }
