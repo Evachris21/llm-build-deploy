@@ -75,6 +75,41 @@ async def materialize_app(local_dir: str, brief: str, attachments: list):
     if not files:
         files = builtin_template(default_url)
     for f in files:
-        p = pathlib.Path(local_dir)/f["path"]
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(f["content"])
+    p = pathlib.Path(local_dir) / f["path"]
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f["content"])
+
+# --- Add GitHub Pages workflow automatically ---
+workflow_dir = pathlib.Path(local_dir) / ".github" / "workflows"
+workflow_dir.mkdir(parents=True, exist_ok=True)
+workflow_file = workflow_dir / "pages.yml"
+workflow_file.write_text("""\
+name: Deploy to GitHub Pages
+on:
+  push:
+    branches: ["main"]
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+""")
