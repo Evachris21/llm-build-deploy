@@ -61,30 +61,12 @@ Tesseract.recognize(url,'eng',{logger:m=>console.log(m)}).then(({data})=>{
 }).catch(e=>{document.getElementById('result').textContent='Error: '+e});
 </script></body></html>"""
     css = "body{font-family:system-ui;margin:16px}main{max-width:720px;margin:auto}img{max-width:100%;border:1px solid #ddd;border-radius:8px}pre{background:#111;color:#0f0;padding:12px;border-radius:8px}"
-    # keep this function unchanged otherwise
     return [
         {"path": "index.html", "content": html.replace("{DEFAULT_URL}", default_url or "")},
         {"path": "styles.css", "content": css}
     ]
 
-async def materialize_app(local_dir: str, brief: str, attachments: list):
-    pathlib.Path(local_dir).mkdir(parents=True, exist_ok=True)
-    default_url = attachments[0].get("url","") if attachments else ""
-    llm = await call_llm(brief)
-    files = llm.get("files") if llm else None
-    if not files:
-        files = builtin_template(default_url)
-    for f in files:
-    p = pathlib.Path(local_dir) / f["path"]
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(f["content"])
-
-# --- Add GitHub Pages workflow automatically ---
-workflow_dir = pathlib.Path(local_dir) / ".github" / "workflows"
-workflow_dir.mkdir(parents=True, exist_ok=True)
-workflow_file = workflow_dir / "pages.yml"
-workflow_file.write_text("""\
-name: Deploy to GitHub Pages
+PAGES_YML = """name: Deploy to GitHub Pages
 on:
   push:
     branches: ["main"]
@@ -99,17 +81,47 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/upload-pages-artifact@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
           path: .
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - id: deployment
+      - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4
-""")
+"""
+
+async def materialize_app(local_dir: str, brief: str, attachments: list):
+    # Ensure working directory exists
+    pathlib.Path(local_dir).mkdir(parents=True, exist_ok=True)
+
+    # Provide default attachment URL (if any)
+    default_url = attachments[0].get("url", "") if attachments else ""
+
+    # Ask LLM for files, or fall back to a built-in template
+    llm = await call_llm(brief)
+    files = llm.get("files") if llm else None
+    if not files:
+        files = builtin_template(default_url)
+
+    # Write all returned files
+    for f in files:
+        p = pathlib.Path(local_dir) / f["path"]
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f["content"], encoding="utf-8")
+
+    # 👉 Write the GitHub Pages workflow (this is the missing step)
+    workflow_dir = pathlib.Path(local_dir) / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True, exist_ok=True)
+    (workflow_dir / "pages.yml").write_text(PAGES_YML, encoding="utf-8")
