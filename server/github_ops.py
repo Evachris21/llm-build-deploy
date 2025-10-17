@@ -3,20 +3,22 @@ import subprocess
 from pathlib import Path
 import httpx
 
-GITHUB_USER = os.environ["GITHUB_USER"]
-GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
+def _require_env(name: str) -> str:
+    v = os.getenv(name)
+    if not v:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return v
 
 async def enable_pages_workflow(owner: str, repo: str):
     """
     Enable GitHub Pages and set build_type=workflow (GitHub Actions).
     Works whether Pages exists or not.
     """
-    if not GITHUB_TOKEN:
-        raise RuntimeError("GITHUB_TOKEN not set")
+    token = _require_env("GITHUB_TOKEN")
 
     base = f"https://api.github.com/repos/{owner}/{repo}/pages"
     headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
@@ -36,7 +38,7 @@ async def enable_pages_workflow(owner: str, repo: str):
                 raise RuntimeError(f"Enable Pages failed (update): {r2.status_code} {r2.text}")
         else:
             raise RuntimeError(f"Pages status check failed: {r.status_code} {r.text}")
-            
+
 def sh(cmd: str, cwd: str | None = None) -> str:
     res = subprocess.run(
         cmd,
@@ -51,8 +53,9 @@ def sh(cmd: str, cwd: str | None = None) -> str:
     return res.stdout.strip()
 
 def _create_repo_via_api(repo_name: str) -> None:
+    token = _require_env("GITHUB_TOKEN")
     headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
     }
     payload = {"name": repo_name, "private": False, "auto_init": False}
@@ -67,27 +70,34 @@ def ensure_repo(repo_name: str, work_dir: str) -> None:
     set the tokened remote, fetch remote main (if it exists),
     and check out local main in sync with origin/main.
     """
-    from pathlib import Path
-    import os
+    user  = _require_env("GITHUB_USER")
+    token = _require_env("GITHUB_TOKEN")
 
     os.makedirs(work_dir, exist_ok=True)
 
-    # 1) Create remote repo via API if needed (your existing helper)
+    # 1) Create remote repo via API if needed
     _create_repo_via_api(repo_name)
 
     # 2) Init local repo if needed & set identity
     if not Path(work_dir, ".git").exists():
         sh("git init -b main", cwd=work_dir)
-        sh(f'git config user.name "{GITHUB_USER}"', cwd=work_dir)
-        sh(f'git config user.email "{GITHUB_USER}@users.noreply.github.com"', cwd=work_dir)
+        sh(f'git config user.name "{user}"', cwd=work_dir)
+        sh(f'git config user.email "{user}@users.noreply.github.com"', cwd=work_dir)
 
     # 3) Ensure remote "origin" points to the tokened URL
-    remote_url = f"https://{GITHUB_USER}:{GITHUB_TOKEN}@github.com/{GITHUB_USER}/{repo_name}.git"
+    remote_url = f"https://{user}:{token}@github.com/{user}/{repo_name}.git"
     try:
         current = sh("git remote get-url origin", cwd=work_dir)
     except RuntimeError:
         current = ""
-    if "origin" not in (sh("git remote", cwd=work_dir) or ""):
+
+    remotes = ""
+    try:
+        remotes = sh("git remote", cwd=work_dir)
+    except RuntimeError:
+        pass
+
+    if "origin" not in remotes:
         sh(f'git remote add origin "{remote_url}"', cwd=work_dir)
     elif remote_url not in current:
         # Replace origin if it points somewhere else
@@ -109,11 +119,13 @@ def write_license_and_readme(work_dir: str, title: str, summary: str) -> None:
         "to any person obtaining a copy of this software and associated documentation files "
         "(the 'Software'), to deal in the Software without restriction, including without "
         "limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, "
-        "and/or sell copies of the Software.\n", encoding="utf-8"
+        "and/or sell copies of the Software.\n",
+        encoding="utf-8",
     )
 
     Path(work_dir, "README.md").write_text(
-        f"# {title}\n\n{summary}\n\n## License\nMIT\n", encoding="utf-8"
+        f"# {title}\n\n{summary}\n\n## License\nMIT\n",
+        encoding="utf-8",
     )
 
 def add_pages_workflow(work_dir: str) -> None:
@@ -162,8 +174,9 @@ def git_push_and_get_commit(work_dir: str) -> str:
         sh("git push -u origin main", cwd=work_dir)
     return sh("git rev-parse HEAD", cwd=work_dir)
 
-def repo_url(repo_name: str) -> str:
-    return f"https://github.com/{GITHUB_USER}/{repo_name}"
+def repo_url(user: str, repo_name: str) -> str:
+    return f"https://github.com/{user}/{repo_name}"
 
-def pages_url(repo_name: str) -> str:
-    return f"https://{GITHUB_USER}.github.io/{repo_name}/"
+def pages_url(user: str, repo_name: str) -> str:
+    return f"https://{user}.github.io/{repo_name}/"
+
