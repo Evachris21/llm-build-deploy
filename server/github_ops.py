@@ -6,6 +6,37 @@ import httpx
 GITHUB_USER = os.environ["GITHUB_USER"]
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 
+async def enable_pages_workflow(owner: str, repo: str):
+    """
+    Enable GitHub Pages and set build_type=workflow (GitHub Actions).
+    Works whether Pages exists or not.
+    """
+    if not GITHUB_TOKEN:
+        raise RuntimeError("GITHUB_TOKEN not set")
+
+    base = f"https://api.github.com/repos/{owner}/{repo}/pages"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+        # Check if Pages exists
+        r = await client.get(base)
+        if r.status_code == 404:
+            # Create Pages site with workflow build
+            r = await client.post(base, json={"build_type": "workflow"})
+            if r.status_code not in (201, 202):
+                raise RuntimeError(f"Enable Pages failed (create): {r.status_code} {r.text}")
+        elif r.status_code == 200:
+            # Update existing Pages site to workflow
+            r2 = await client.put(base, json={"build_type": "workflow"})
+            if r2.status_code not in (200, 204):
+                raise RuntimeError(f"Enable Pages failed (update): {r2.status_code} {r2.text}")
+        else:
+            raise RuntimeError(f"Pages status check failed: {r.status_code} {r.text}")
+            
 def sh(cmd: str, cwd: str | None = None) -> str:
     res = subprocess.run(
         cmd,
